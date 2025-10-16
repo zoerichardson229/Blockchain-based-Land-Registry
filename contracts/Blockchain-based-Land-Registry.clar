@@ -8,9 +8,13 @@
 (define-constant ERR_INVALID_PRICE (err u106))
 (define-constant ERR_PROPERTY_NOT_FOR_SALE (err u107))
 (define-constant ERR_INSUFFICIENT_FUNDS (err u108))
+(define-constant ERR_INSPECTOR_NOT_CERTIFIED (err u109))
+(define-constant ERR_INSPECTION_NOT_FOUND (err u110))
+(define-constant ERR_INSPECTION_ALREADY_EXISTS (err u111))
 
 (define-data-var property-id-nonce uint u0)
 (define-data-var transfer-id-nonce uint u0)
+(define-data-var inspection-id-nonce uint u0)
 
 (define-map properties
     uint
@@ -69,6 +73,39 @@
     (list 100 uint)
 )
 
+;; Property Inspection System Maps
+(define-map certified-inspectors
+    principal
+    {
+        license-number: (string-ascii 64),
+        certification-date: uint,
+        specialization: (string-ascii 128),
+        is-active: bool,
+    }
+)
+
+(define-map property-inspections
+    uint
+    {
+        property-id: uint,
+        inspector: principal,
+        inspection-type: (string-ascii 64),
+        inspection-date: uint,
+        status: (string-ascii 32),
+        findings: (string-ascii 512),
+        score: uint,
+        recommendations: (string-ascii 512),
+    }
+)
+
+(define-map property-inspection-history
+    {
+        property-id: uint,
+        inspection-sequence: uint,
+    }
+    uint
+)
+
 (define-read-only (get-property (property-id uint))
     (map-get? properties property-id)
 )
@@ -107,6 +144,39 @@
 
 (define-read-only (get-current-transfer-id)
     (var-get transfer-id-nonce)
+)
+
+;; Property Inspection System Read-Only Functions
+(define-read-only (get-inspector-info (inspector principal))
+    (map-get? certified-inspectors inspector)
+)
+
+(define-read-only (get-inspection (inspection-id uint))
+    (map-get? property-inspections inspection-id)
+)
+
+(define-read-only (get-property-inspection-by-sequence
+        (property-id uint)
+        (sequence uint)
+    )
+    (match (map-get? property-inspection-history {
+        property-id: property-id,
+        inspection-sequence: sequence,
+    })
+        inspection-id (get-inspection inspection-id)
+        none
+    )
+)
+
+(define-read-only (get-current-inspection-id)
+    (var-get inspection-id-nonce)
+)
+
+(define-read-only (is-certified-inspector (inspector principal))
+    (match (get-inspector-info inspector)
+        info (get is-active info)
+        false
+    )
 )
 
 (define-private (add-property-to-owner
@@ -386,5 +456,133 @@
         })
 
         (ok true)
+    )
+)
+
+;; Property Inspection System Public Functions
+(define-public (certify-inspector
+        (inspector principal)
+        (license-number (string-ascii 64))
+        (specialization (string-ascii 128))
+    )
+    (begin
+        (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+        
+        (map-set certified-inspectors inspector {
+            license-number: license-number,
+            certification-date: stacks-block-height,
+            specialization: specialization,
+            is-active: true,
+        })
+        
+        (print {
+            event: "inspector-certified",
+            inspector: inspector,
+            license-number: license-number,
+            specialization: specialization,
+        })
+        
+        (ok true)
+    )
+)
+
+(define-public (revoke-inspector-certification (inspector principal))
+    (let ((inspector-info (unwrap! (get-inspector-info inspector) ERR_INSPECTOR_NOT_CERTIFIED)))
+        (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+        
+        (map-set certified-inspectors inspector
+            (merge inspector-info { is-active: false })
+        )
+        
+        (print {
+            event: "inspector-certification-revoked",
+            inspector: inspector,
+        })
+        
+        (ok true)
+    )
+)
+
+(define-public (conduct-property-inspection
+        (property-id uint)
+        (inspection-type (string-ascii 64))
+        (findings (string-ascii 512))
+        (score uint)
+        (recommendations (string-ascii 512))
+    )
+    (let (
+            (property-data (unwrap! (get-property property-id) ERR_PROPERTY_NOT_FOUND))
+            (new-inspection-id (+ (var-get inspection-id-nonce) u1))
+            (inspection-sequence (+ (len (get-property-inspection-sequence property-id)) u1))
+        )
+        (asserts! (is-certified-inspector tx-sender) ERR_INSPECTOR_NOT_CERTIFIED)
+        (asserts! (and (>= score u0) (<= score u100)) ERR_INVALID_PRICE)
+        
+        (map-set property-inspections new-inspection-id {
+            property-id: property-id,
+            inspector: tx-sender,
+            inspection-type: inspection-type,
+            inspection-date: stacks-block-height,
+            status: "completed",
+            findings: findings,
+            score: score,
+            recommendations: recommendations,
+        })
+        
+        (map-set property-inspection-history {
+            property-id: property-id,
+            inspection-sequence: inspection-sequence,
+        } new-inspection-id)
+        
+        (var-set inspection-id-nonce new-inspection-id)
+        
+        (print {
+            event: "property-inspection-completed",
+            inspection-id: new-inspection-id,
+            property-id: property-id,
+            inspector: tx-sender,
+            inspection-type: inspection-type,
+            score: score,
+        })
+        
+        (ok new-inspection-id)
+    )
+)
+
+(define-public (update-inspection-status
+        (inspection-id uint)
+        (new-status (string-ascii 32))
+    )
+    (let ((inspection-data (unwrap! (get-inspection inspection-id) ERR_INSPECTION_NOT_FOUND)))
+        (asserts! (is-eq tx-sender (get inspector inspection-data)) ERR_UNAUTHORIZED)
+        
+        (map-set property-inspections inspection-id
+            (merge inspection-data { status: new-status })
+        )
+        
+        (print {
+            event: "inspection-status-updated",
+            inspection-id: inspection-id,
+            new-status: new-status,
+        })
+        
+        (ok true)
+    )
+)
+
+;; Helper function to get inspection sequence for a property
+(define-private (get-property-inspection-sequence (property-id uint))
+    (let ((sequence-length u10)) ;; Max 10 inspections per property for this example
+        (map count-inspections (list u1 u2 u3 u4 u5 u6 u7 u8 u9 u10))
+    )
+)
+
+(define-private (count-inspections (sequence uint))
+    (match (map-get? property-inspection-history {
+        property-id: (var-get property-id-nonce), ;; This is a simplified approach
+        inspection-sequence: sequence,
+    })
+        inspection-id u1
+        u0
     )
 )
