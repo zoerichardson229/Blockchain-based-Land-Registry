@@ -62,6 +62,6 @@ plan:
         - emulated-contract-publish:
             contract-name: Blockchain-based-Land-Registry
             emulated-sender: ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM
-            path: contracts/Blockchain-based-Land-Registry.clar
+            path: "contracts\\Blockchain-based-Land-Registry.clar"
             clarity-version: 3
       epoch: "3.1"
